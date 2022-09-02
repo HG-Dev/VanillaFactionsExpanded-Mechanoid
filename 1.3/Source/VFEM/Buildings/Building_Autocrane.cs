@@ -10,6 +10,10 @@ namespace VFEMech
     [StaticConstructorOnStartup]
     public class Building_Autocrane : Building
     {
+        public const float BaseConstructionSpeed = 1.7f;
+        public const int MaxDistanceToTargets = 20;
+        public const int MinDistanceFromBase = 6;
+
         private CompPowerTrader compPower;
 
         private Frame curFrameTarget;
@@ -19,6 +23,8 @@ namespace VFEMech
         public float curCraneSize;
         private IntVec3 endCranePosition;
         private float curRotationInt;
+        private float curConstructionSpeed = BaseConstructionSpeed;
+        private int ticksPerHpRepaired = 20;
 
         private static Material craneTopMat1 = MaterialPool.MatFrom("Things/Automation/AutoCrane/AutoCrane_Crane1");
         private static Material craneTopMat2 = MaterialPool.MatFrom("Things/Automation/AutoCrane/AutoCrane_Crane2");
@@ -29,12 +35,11 @@ namespace VFEMech
         [TweakValue("00VFEM", -10, 10)] private static float topDrawOffsetX = -0.02f;
         [TweakValue("00VFEM", -10, 10)] private static float topDrawOffsetZ = 2.23f;
 
-        public const int MaxDistanceToTargets = 20;
-        public const int MinDistanceFromBase = 6;
-
         [TweakValue("00VFEM", 0, 1)] private static float rotationSpeed = 0.5f;
         [TweakValue("00VFEM", 0, 1)] private static float craneErectionSpeed = 0.005f;
         [TweakValue("00VFEM", 0, 20)] private static float distanceRate = 14.5f;
+
+        public bool IsIdeologyBoosted => ModsConfig.IdeologyActive && this.Faction.ideos.PrimaryIdeo.memes.Any(x => x.defName == "VME_Progressive");
 
         public class SafeSustainedEffecter
         {
@@ -119,8 +124,16 @@ namespace VFEMech
 
         }
 
+        private enum AlertnessLevel : int
+        {
+            Immediate = 1,
+            Moderate = 30,
+            Asleep = 120
+        }
+
         SafeSustainedEffecter constructionEffecter;
         SafeSustainedEffecter repairEffecter;
+        AlertnessLevel alertnessLevel = AlertnessLevel.Moderate;
 
         bool turnClockWise;
         private Vector3 CraneDrawPos => this.DrawPos + Altitudes.AltIncVect + new Vector3(topDrawOffsetX, 0, topDrawOffsetZ);
@@ -150,6 +163,13 @@ namespace VFEMech
             }
             constructionEffecter = new SafeSustainedEffecter(curFrameTarget?.ConstructionEffect);
             repairEffecter = new SafeSustainedEffecter(curBuildingTarget?.def.repairEffect);
+
+            if (HasAnyTarget)
+                compPower.powerOutputInt = -3000;
+            if (HasFrameTarget)
+                curConstructionSpeed = CalculateConstructionSpeed(curFrameTarget, IsIdeologyBoosted);
+            if (HasBuildingTarget && IsIdeologyBoosted)
+                ticksPerHpRepaired = 16;
         }
 
         private IntVec3 GetStartingEndCranePosition()
@@ -184,9 +204,20 @@ namespace VFEMech
             base.Tick();
             if (this.Map != null && compPower.PowerOn && this.Faction == Faction.OfPlayer)
             {
-                if (this.IsHashIntervalTick(30))
+                if (this.IsHashIntervalTick((int)alertnessLevel) && !HasAnyTarget)
                 {
-                    TryFindTarget();
+                    if (TryFindFirstValidTarget(out LocalTargetInfo targetInfo))
+                    {
+                        curCellTarget = IntVec3.Invalid;
+                        StartMovingTo(targetInfo);
+                        compPower.powerOutputInt = -3000; // Enter power-costly state
+                        alertnessLevel = AlertnessLevel.Moderate;
+                    }
+                    else
+                    {
+                        compPower.powerOutputInt = -200; // Enter low-power state (repeated while no target is found)
+                        alertnessLevel = AlertnessLevel.Asleep;
+                    }
                 }
 
                 if (curFrameTarget != null)
@@ -232,53 +263,54 @@ namespace VFEMech
 
         private bool HasFrameTarget => curFrameTarget != null && !curFrameTarget.Destroyed && BaseValidator(curFrameTarget);
         private bool HasBuildingTarget => curBuildingTarget != null && !curBuildingTarget.Destroyed && curBuildingTarget.MaxHitPoints > curBuildingTarget.HitPoints && BaseValidator(curBuildingTarget);
-        private void TryFindTarget()
+        private bool HasAnyTarget => HasFrameTarget || HasBuildingTarget;
+
+        private bool TryFindFirstValidTarget(out LocalTargetInfo targetInfo)
         {
-            var hasFrameTarget = HasFrameTarget;
-            var hasBuildingTarget = HasBuildingTarget;
-            if (hasFrameTarget || hasBuildingTarget)
+            targetInfo = null;
+
+            if (!HasFrameTarget)
             {
-                return;
-            }
-            if (!hasFrameTarget)
-            {
-                curFrameTarget = NextFrameTarget();
+                targetInfo = curFrameTarget = NextFrameTarget();
 
                 if (curFrameTarget != null)
                 {
                     curBuildingTarget = null;
-                    curCellTarget = IntVec3.Invalid;
-
-                    StartMovingTo(curFrameTarget);
+                    curConstructionSpeed = CalculateConstructionSpeed(curFrameTarget, IsIdeologyBoosted);
                     constructionEffecter.SetEffecterDef(curFrameTarget.ConstructionEffect);
-                    compPower.powerOutputInt = -3000;
-                    return;
-                }
-                else
-                {
-                    compPower.powerOutputInt = -200;
+                    return true;
                 }
             }
-            if (!hasBuildingTarget)
+
+            if (!HasBuildingTarget)
             {
-                curBuildingTarget = NextDamagedBuildingTarget();
+                targetInfo = curBuildingTarget = NextDamagedBuildingTarget();
 
                 if (curBuildingTarget != null)
                 {
                     curFrameTarget = null;
-                    curCellTarget = IntVec3.Invalid;
-
-                    StartMovingTo(curBuildingTarget);
                     repairEffecter.SetEffecterDef(curBuildingTarget.def.repairEffect);
-                    compPower.powerOutputInt = -3000;
-                    return;
-                }
-                else
-                {
-                    compPower.powerOutputInt = -200;
+                    return true;
                 }
             }
+
+            return false;
         }
+
+        private static float CalculateConstructionSpeed(Frame targetFrame, bool isIdeologyBoosted)
+        {
+            float result = BaseConstructionSpeed;
+            if (isIdeologyBoosted)
+            {
+                result *= 1.25f;
+            }
+            if (targetFrame.Stuff != null)
+            {
+                result *= targetFrame.Stuff.GetStatValueAbstract(StatDefOf.ConstructionSpeedFactor);
+            }
+            return result;
+        }
+
         private void StartMovingTo(LocalTargetInfo target)
         {
             var angle = CraneDrawPos.AngleToFlat(target.CenterVector3);
@@ -338,42 +370,27 @@ namespace VFEMech
 
         private void DoConstruction(Frame frame)
         {
-            float num = 1.7f;
-            if (ModsConfig.IdeologyActive && this.Faction.ideos.PrimaryIdeo.memes.Any(x => x.defName == "VME_Progressive"))
-            {
-                num *= 1.25f;
-            }
-            if (frame.Stuff != null)
-            {
-                num *= frame.Stuff.GetStatValueAbstract(StatDefOf.ConstructionSpeedFactor);
-            }
-            float workToBuild = frame.WorkToBuild;
             if (frame.def.entityDefToBuild is TerrainDef)
             {
                 base.Map.snowGrid.SetDepth(frame.Position, 0f);
             }
-            frame.workDone += num;
-            if (frame.workDone >= workToBuild)
+            frame.workDone += curConstructionSpeed;
+            if (frame.workDone >= frame.WorkToBuild)
             {
-                CompleteConstruction(this, frame);
+                CompleteConstruction(frame);
             }
         }
 
         private void DoRepairing(Building building)
         {
-            var numTicks = 20;
-            if (ModsConfig.IdeologyActive && this.Faction.ideos.PrimaryIdeo.memes.Any(x => x.defName == "VME_Progressive"))
-            {
-                numTicks /= (int)(numTicks / 1.25f);
-            }
-            if (this.IsHashIntervalTick(numTicks))
+            if (this.IsHashIntervalTick(ticksPerHpRepaired))
             {
                 building.HitPoints++;
-                building.HitPoints = Mathf.Min(building.HitPoints, building.MaxHitPoints);
                 base.Map.listerBuildingsRepairable.Notify_BuildingRepaired(building);
             }
-            if (building.HitPoints == building.MaxHitPoints)
+            if (building.HitPoints >= building.MaxHitPoints)
             {
+                building.HitPoints = building.MaxHitPoints;
                 CompleteRepairing(building);
             }
         }
@@ -381,14 +398,14 @@ namespace VFEMech
         private void CompleteRepairing(Building building)
         {
             curBuildingTarget = null;
-            TryFindTarget();
+            alertnessLevel = AlertnessLevel.Immediate;
         }
 
-        public static void CompleteConstruction(Building_Autocrane autoCrane, Frame frame)
+        public void CompleteConstruction(Frame frame)
         {
-            if (autoCrane.Faction != null)
+            if (Faction != null)
             {
-                QuestUtility.SendQuestTargetSignals(autoCrane.questTags, "BuiltBuilding", frame.Named("SUBJECT"));
+                QuestUtility.SendQuestTargetSignals(questTags, "BuiltBuilding", frame.Named("SUBJECT"));
             }
             List<CompHasSources> list = new List<CompHasSources>();
             for (int i = 0; i < frame.resourceContainer.Count; i++)
@@ -442,9 +459,10 @@ namespace VFEMech
                 map.terrainGrid.SetTerrain(frame.Position, (TerrainDef)frame.def.entityDefToBuild);
                 FilthMaker.RemoveAllFilth(frame.Position, map);
             }
-            autoCrane.curFrameTarget = null;
-            autoCrane.TryFindTarget();
+            curFrameTarget = null;
+            alertnessLevel = AlertnessLevel.Immediate;
         }
+
         private static float ClampAngle(float angle)
         {
             if (angle > 360f)
