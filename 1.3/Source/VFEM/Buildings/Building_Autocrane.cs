@@ -10,7 +10,7 @@ namespace VFEMech
     [StaticConstructorOnStartup]
     public class Building_Autocrane : Building
     {
-        public const float BaseConstructionSpeed = 1.7f;
+        public const float BaseConstructionSpeed = 2.2f;
         public const int MaxDistanceToTargets = 20;
         public const int MinDistanceFromBase = 6;
 
@@ -24,7 +24,7 @@ namespace VFEMech
         private IntVec3 endCranePosition;
         private float curRotationInt;
         private float curConstructionSpeed = BaseConstructionSpeed;
-        private int ticksPerHpRepaired = 20;
+        private int ticksPerHpRepaired = 12;
 
         private static Material craneTopMat1 = MaterialPool.MatFrom("Things/Automation/AutoCrane/AutoCrane_Crane1");
         private static Material craneTopMat2 = MaterialPool.MatFrom("Things/Automation/AutoCrane/AutoCrane_Crane2");
@@ -169,7 +169,7 @@ namespace VFEMech
             if (HasFrameTarget)
                 curConstructionSpeed = CalculateConstructionSpeed(curFrameTarget, IsIdeologyBoosted);
             if (HasBuildingTarget && IsIdeologyBoosted)
-                ticksPerHpRepaired = 16;
+                ticksPerHpRepaired = 8;
         }
 
         private IntVec3 GetStartingEndCranePosition()
