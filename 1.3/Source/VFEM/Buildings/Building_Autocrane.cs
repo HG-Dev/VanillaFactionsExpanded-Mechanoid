@@ -10,6 +10,10 @@ namespace VFEMech
     [StaticConstructorOnStartup]
     public class Building_Autocrane : Building
     {
+        public const float BaseConstructionSpeed = 1.7f;
+        public const int MaxDistanceToTargets = 20;
+        public const int MinDistanceFromBase = 6;
+
         private CompPowerTrader compPower;
 
         private Frame curFrameTarget;
@@ -19,6 +23,8 @@ namespace VFEMech
         public float curCraneSize;
         private IntVec3 endCranePosition;
         private float curRotationInt;
+        private float curConstructionSpeed = BaseConstructionSpeed;
+        private int ticksPerHpRepaired = 20;
 
         private static Material craneTopMat1 = MaterialPool.MatFrom("Things/Automation/AutoCrane/AutoCrane_Crane1");
         private static Material craneTopMat2 = MaterialPool.MatFrom("Things/Automation/AutoCrane/AutoCrane_Crane2");
@@ -29,12 +35,11 @@ namespace VFEMech
         [TweakValue("00VFEM", -10, 10)] private static float topDrawOffsetX = -0.02f;
         [TweakValue("00VFEM", -10, 10)] private static float topDrawOffsetZ = 2.23f;
 
-        public const int MaxDistanceToTargets = 20;
-        public const int MinDistanceFromBase = 6;
-
         [TweakValue("00VFEM", 0, 1)] private static float rotationSpeed = 0.5f;
         [TweakValue("00VFEM", 0, 1)] private static float craneErectionSpeed = 0.005f;
         [TweakValue("00VFEM", 0, 20)] private static float distanceRate = 14.5f;
+
+        public bool IsIdeologyBoosted => ModsConfig.IdeologyActive && this.Faction.ideos.PrimaryIdeo.memes.Any(x => x.defName == "VME_Progressive");
 
         public class SafeSustainedEffecter
         {
@@ -150,6 +155,11 @@ namespace VFEMech
             }
             constructionEffecter = new SafeSustainedEffecter(curFrameTarget?.ConstructionEffect);
             repairEffecter = new SafeSustainedEffecter(curBuildingTarget?.def.repairEffect);
+
+            if (curFrameTarget != null)
+                curConstructionSpeed = CalculateConstructionSpeed(curFrameTarget, IsIdeologyBoosted);
+            if (curBuildingTarget != null && IsIdeologyBoosted)
+                ticksPerHpRepaired = 16;
         }
 
         private IntVec3 GetStartingEndCranePosition()
@@ -240,6 +250,7 @@ namespace VFEMech
             {
                 return;
             }
+            bool isIdeologyBoosted = ModsConfig.IdeologyActive && this.Faction.ideos.PrimaryIdeo.memes.Any(x => x.defName == "VME_Progressive");
             if (!hasFrameTarget)
             {
                 curFrameTarget = NextFrameTarget();
@@ -252,6 +263,7 @@ namespace VFEMech
                     StartMovingTo(curFrameTarget);
                     constructionEffecter.SetEffecterDef(curFrameTarget.ConstructionEffect);
                     compPower.powerOutputInt = -3000;
+                    curConstructionSpeed = CalculateConstructionSpeed(curFrameTarget, isIdeologyBoosted);
                     return;
                 }
                 else
@@ -270,6 +282,7 @@ namespace VFEMech
 
                     StartMovingTo(curBuildingTarget);
                     repairEffecter.SetEffecterDef(curBuildingTarget.def.repairEffect);
+                    ticksPerHpRepaired = isIdeologyBoosted ? 16 : 20;
                     compPower.powerOutputInt = -3000;
                     return;
                 }
@@ -279,6 +292,21 @@ namespace VFEMech
                 }
             }
         }
+
+        private static float CalculateConstructionSpeed(Frame targetFrame, bool isIdeologyBoosted)
+        {
+            float result = BaseConstructionSpeed;
+            if (isIdeologyBoosted)
+            {
+                result *= 1.25f;
+            }
+            if (targetFrame.Stuff != null)
+            {
+                result *= targetFrame.Stuff.GetStatValueAbstract(StatDefOf.ConstructionSpeedFactor);
+            }
+            return result;
+        }
+
         private void StartMovingTo(LocalTargetInfo target)
         {
             var angle = CraneDrawPos.AngleToFlat(target.CenterVector3);
@@ -338,22 +366,12 @@ namespace VFEMech
 
         private void DoConstruction(Frame frame)
         {
-            float num = 1.7f;
-            if (ModsConfig.IdeologyActive && this.Faction.ideos.PrimaryIdeo.memes.Any(x => x.defName == "VME_Progressive"))
-            {
-                num *= 1.25f;
-            }
-            if (frame.Stuff != null)
-            {
-                num *= frame.Stuff.GetStatValueAbstract(StatDefOf.ConstructionSpeedFactor);
-            }
-            float workToBuild = frame.WorkToBuild;
             if (frame.def.entityDefToBuild is TerrainDef)
             {
                 base.Map.snowGrid.SetDepth(frame.Position, 0f);
             }
-            frame.workDone += num;
-            if (frame.workDone >= workToBuild)
+            frame.workDone += curConstructionSpeed;
+            if (frame.workDone >= frame.WorkToBuild)
             {
                 CompleteConstruction(this, frame);
             }
@@ -361,19 +379,14 @@ namespace VFEMech
 
         private void DoRepairing(Building building)
         {
-            var numTicks = 20;
-            if (ModsConfig.IdeologyActive && this.Faction.ideos.PrimaryIdeo.memes.Any(x => x.defName == "VME_Progressive"))
-            {
-                numTicks /= (int)(numTicks / 1.25f);
-            }
-            if (this.IsHashIntervalTick(numTicks))
+            if (this.IsHashIntervalTick(ticksPerHpRepaired))
             {
                 building.HitPoints++;
-                building.HitPoints = Mathf.Min(building.HitPoints, building.MaxHitPoints);
                 base.Map.listerBuildingsRepairable.Notify_BuildingRepaired(building);
             }
-            if (building.HitPoints == building.MaxHitPoints)
+            if (building.HitPoints >= building.MaxHitPoints)
             {
+                building.HitPoints = building.MaxHitPoints;
                 CompleteRepairing(building);
             }
         }
