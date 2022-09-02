@@ -276,6 +276,7 @@ namespace VFEMech
                 if (curFrameTarget != null)
                 {
                     curBuildingTarget = null;
+                    curConstructionSpeed = CalculateConstructionSpeed(curFrameTarget, IsIdeologyBoosted);
                     constructionEffecter.SetEffecterDef(curFrameTarget.ConstructionEffect);
                     return true;
                 }
